@@ -2,4 +2,4 @@
 
 set -e
 
-gcc src/*.c -o server app/*.c
+gcc src/*.c -o server -lz

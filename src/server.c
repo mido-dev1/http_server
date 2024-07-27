@@ -113,7 +113,7 @@ int main(int argc, char *argv[])
 		signal_handler(0);
 	}
 
-	printf("Waiting for a client to connect...\n");
+	printf("Waiting for a client to connect...(port: 4221)\n");
 
 	int clientfd;
 
@@ -253,6 +253,7 @@ void *handle_response(void *arg)
 					response,
 					sizeof(response),
 					"HTTP/1.1 201 Created\r\n\r\n");
+				fclose(file);
 			}
 			send_compress(clientfd, response, 0, 0);
 		}
@@ -277,6 +278,7 @@ void *handle_response(void *arg)
 						response,
 						sizeof(response),
 						"HTTP/1.1 500 Internal Server Error\r\n\r\n");
+					fclose(file);
 				}
 				else
 				{
@@ -290,10 +292,10 @@ void *handle_response(void *arg)
 					{
 						send_compress(clientfd, response, 0, 0);
 					}
+					fclose(file);
 				}
 			}
 		}
-		fclose(file);
 	}
 	else
 	{
@@ -393,7 +395,6 @@ data_t *parse_request(char *buf)
 
 int send_compress(int clientfd, char *response, unsigned char is_compress, char *input)
 {
-	printf("%s\n", response);
 	int ret;
 	if (!is_compress)
 	{
