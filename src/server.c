@@ -6,7 +6,6 @@
 #include <signal.h>
 #include <unistd.h>
 #include <zlib.h>
-#include <sys/stat.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -27,7 +26,7 @@ typedef struct
 void signal_handler(int sig);
 void *handle_response(void *arg);
 data_t *parse_request(char *buf);
-int send_compress(int clientfd, char *response, unsigned char compress, char *input);
+int send_compress(int clientfd, char *header, char *body, unsigned char is_compress);
 
 int sockfd;
 char fullpath[PATH_MAX];
@@ -37,7 +36,6 @@ int main(int argc, char *argv[])
 {
 	if (argc == 3 && !strcmp(argv[1], "--directory") && *argv[2] != 0)
 	{
-		// printf("Usage: %s --directory path\n", argv[0]);
 		// exit(EXIT_FAILURE);
 
 		// Check path valid
@@ -68,6 +66,10 @@ int main(int argc, char *argv[])
 		}
 		strcpy(basepath, fullpath);
 		printf("Directory: %s\n", basepath);
+	}
+	else
+	{
+		printf("Usage: %s --directory path\n", argv[0]);
 	}
 
 	// create a socket
@@ -194,40 +196,35 @@ void *handle_response(void *arg)
 		close(clientfd);
 		return 0;
 	}
-	char response[BUFSIZ] = {0};
-	int e;
+	char header[BUFSIZ] = {0};
+	char *body;
 
 	if (!data->endpoint) // invalid
 	{
-		strcpy(response, "HTTP/1.1 404 Not Found\r\n\r\n");
+		strcpy(header, "HTTP/1.1 404 Not Found\r\n");
+		body = "Not Found";
 		// send
-		send_compress(clientfd, response, data->compress, data->str);
+		send_compress(clientfd, header, body, data->compress);
 	}
 	else if (data->user_agent) // /user-agent
 	{
-		e = snprintf(response, sizeof(response), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\n\r\n%s", strlen(data->user_agent), data->user_agent);
-		if (e >= sizeof(response))
-		{
-			strcpy(response, "HTTP/1.1 500 Internal Server Error\r\n\r\n");
-		}
+		strcpy(header, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n");
+		body = data->user_agent;
 		// send
-		send_compress(clientfd, response, data->compress, data->str);
+		send_compress(clientfd, header, body, data->compress);
 	}
-	else if (data->str)
+	else if (data->str) // /echo/
 	{
-		// TODO:compression
-		e = snprintf(response, sizeof(response), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\n\r\n%s", strlen(data->str), data->str);
-		if (e >= sizeof(response))
-		{
-			strcpy(response, "HTTP/1.1 500 Internal Server Error\r\n\r\n");
-		}
+		strcpy(header, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n");
+		body = data->str;
 		// send
-		send_compress(clientfd, response, data->compress, data->str);
+		send_compress(clientfd, header, body, data->compress);
 	}
 	else if (!strcmp(data->endpoint, "/")) // /
 	{
-		strcpy(response, "HTTP/1.1 200 OK\r\n\r\n");
-		send_compress(clientfd, response, data->compress, data->str);
+		strcpy(header, "HTTP/1.1 200 OK\r\n");
+		body = "Hello World!";
+		send_compress(clientfd, header, body, data->compress);
 	}
 	else if (data->filename && basepath) // /files
 	{
@@ -239,69 +236,55 @@ void *handle_response(void *arg)
 			if (!(file = fopen((char *)fullpath, "w")))
 			{
 				perror("Failed open file");
-				snprintf(
-					response,
-					sizeof(response),
-					"HTTP/1.1 500 Internal Server Error\r\n\r\n");
+				strcpy(
+					header,
+					"HTTP/1.1 500 Internal Server Error\r\n");
+				body = "Internal Server Error";
 			}
 			else
 			{
-				// fprintf(file, data->post_data);
 				fwrite(data->post_data, 1, strlen(data->post_data), file);
-				// printf("%s\n", data->post_data);
-				snprintf(
-					response,
-					sizeof(response),
-					"HTTP/1.1 201 Created\r\n\r\n");
+				strcpy(
+					header,
+					"HTTP/1.1 201 Created\r\n");
+				body = "File Created!";
 				fclose(file);
 			}
-			send_compress(clientfd, response, 0, 0);
+			send_compress(clientfd, header, body, data->compress);
 		}
 		else // get file data
 		{
 			if (!(file = fopen((char *)fullpath, "r")))
 			{
 				perror("Failed open file");
-				snprintf(
-					response,
-					sizeof(response),
-					"HTTP/1.1 404 Not Found\r\n\r\n");
-				send_compress(clientfd, response, 0, 0);
+				strcpy(
+					header,
+					"HTTP/1.1 404 Not Found\r\n");
+				body = "File Not Found";
+				send_compress(clientfd, header, body, data->compress);
 			}
 			else
 			{
-				struct stat file_status;
-				if (stat(fullpath, &file_status) < 0)
+				strcpy(
+					header,
+					"HTTP/1.1 200 OK\r\n");
+				send_compress(clientfd, header, 0, data->compress);
+				size_t read_bytes;
+				while ((read_bytes = fread(header, 1, BUFSIZ, file)) > 0)
 				{
-					perror("get stat of file failed");
-					snprintf(
-						response,
-						sizeof(response),
-						"HTTP/1.1 500 Internal Server Error\r\n\r\n");
-					fclose(file);
+					header[read_bytes] = 0;
+					send_compress(clientfd, 0, header, data->compress);
 				}
-				else
-				{
-					snprintf(
-						response,
-						sizeof(response),
-						"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %zu\r\n\r\n",
-						file_status.st_size);
-					send_compress(clientfd, response, 0, 0);
-					while (fread(response, 1, BUFSIZ, file) > 0)
-					{
-						send_compress(clientfd, response, 0, 0);
-					}
-					fclose(file);
-				}
+				fclose(file);
 			}
 		}
 	}
 	else
 	{
-		strcpy(response, "HTTP/1.1 404 Not Found\r\n\r\n");
+		strcpy(header, "HTTP/1.1 404 Not Found\r\n");
+		body = "Not Found";
 		// send
-		send_compress(clientfd, response, data->compress, data->str);
+		send_compress(clientfd, header, body, data->compress);
 	}
 	free(data);
 	close(clientfd);
@@ -329,7 +312,6 @@ data_t *parse_request(char *buf)
 			{
 				// invalid request missing file name
 				data->endpoint = 0;
-				data->post_data = 0;
 				break;
 			}
 			// extract the file name
@@ -351,7 +333,7 @@ data_t *parse_request(char *buf)
 
 			if (!strcmp(data->endpoint, "/"))
 			{
-				break;
+				continue;
 			}
 			else if (!strncmp(data->endpoint, "/echo/", 6))
 			{ // echo endpt
@@ -369,8 +351,8 @@ data_t *parse_request(char *buf)
 				{
 					// invalid request missing file name
 					data->endpoint = 0;
+					break;
 				}
-				break;
 			}
 			else if (!(!strcmp(data->endpoint, "/user-agent/") || !strcmp(data->endpoint, "/user-agent")))
 			{
@@ -381,74 +363,91 @@ data_t *parse_request(char *buf)
 		else if (!strncasecmp(token, "User-Agent: ", 12) && !strncmp(data->endpoint, "/user-agent", 11))
 		{
 			data->user_agent = token + 12;
-			break;
 		}
 		else if (!strncmp(token, "Accept-Encoding: ", 17))
 		{
 			data->compress = strstr(token + 17, "gzip") ? 1 : 0; // true
-			break;
 		}
 	}
 
 	return data;
 }
 
-int send_compress(int clientfd, char *response, unsigned char is_compress, char *input)
+int send_compress(int clientfd, char *header, char *body, unsigned char is_compress)
 {
 	int ret;
 	if (!is_compress)
 	{
-		ret = send(clientfd, response, strlen(response), 0);
+		// send header first
+		if (header)
+		{
+			strcat(header, "\n\r");
+			ret = send(clientfd, header, strlen(header), 0);
+			if (ret == -1)
+			{
+				perror("Failed to send response");
+				return -1;
+			}
+		}
+		if (body)
+		{
+			ret = send(clientfd, body, strlen(body), 0);
+			if (ret == -1)
+			{
+				perror("Failed to send response");
+				return -1;
+			}
+		}
+		return Z_OK;
+	}
+	// else
+	if (header)
+	{
+		strcat(header, "Content-Encoding: gzip\r\n\r\n");
+		ret = send(clientfd, header, strlen(header), 0);
 		if (ret == -1)
 		{
 			perror("Failed to send response");
 			return -1;
 		}
-		return Z_OK;
 	}
-	// compression
-	z_stream strm;
-	char buf[BUFSIZ];
-
-	strm.zalloc = Z_NULL;
-	strm.zfree = Z_NULL;
-	strm.opaque = Z_NULL;
-	ret = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 | 16, 8, Z_DEFAULT_STRATEGY);
-	if (ret != Z_OK)
+	if (body)
 	{
-		perror("Compression init failed");
-		return ret;
-	}
-	strm.avail_in = (uInt)strlen(input);
-	strm.next_in = (Bytef *)input;
+		z_stream strm;
+		char buf[BUFSIZ];
 
-	strm.avail_out = (uInt)BUFSIZ;
-	strm.next_out = (Bytef *)buf;
-	ret = deflate(&strm, Z_FINISH);
-	if (ret == Z_STREAM_ERROR)
-	{
-		perror("Compression failed");
+		strm.zalloc = Z_NULL;
+		strm.zfree = Z_NULL;
+		strm.opaque = Z_NULL;
+		ret = deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 | 16, 8, Z_DEFAULT_STRATEGY);
+		if (ret != Z_OK)
+		{
+			perror("Compression init failed");
+			return ret;
+		}
+		strm.avail_in = (uInt)strlen(body);
+		strm.next_in = (Bytef *)body;
+
+		strm.avail_out = (uInt)BUFSIZ;
+		strm.next_out = (Bytef *)buf;
+		ret = deflate(&strm, Z_FINISH);
+		if (ret == Z_STREAM_ERROR)
+		{
+			perror("Compression failed");
+			deflateEnd(&strm);
+			return ret;
+		}
+
+		unsigned int length = BUFSIZ - strm.avail_out;
+
 		deflateEnd(&strm);
-		return ret;
+
+		ret = send(clientfd, buf, length, 0);
+		if (ret == -1)
+		{
+			perror("Failed to send response");
+			return -1;
+		}
 	}
-
-	unsigned int length = BUFSIZ - strm.avail_out;
-
-	deflateEnd(&strm);
-
-	snprintf(response, BUFSIZ, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: %zu\r\n\r\n", length);
-	ret = send(clientfd, response, strlen(response), 0);
-	if (ret == -1)
-	{
-		perror("Failed to send response");
-		return -1;
-	}
-	ret = send(clientfd, buf, length, 0);
-	if (ret == -1)
-	{
-		perror("Failed to send response");
-		return -1;
-	}
-
 	return Z_OK;
 }

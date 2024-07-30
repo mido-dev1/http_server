@@ -2,4 +2,4 @@
 
 set -e
 
-gcc src/*.c -o server -lz
+gcc src/*.c -o server -lz -lpthread
